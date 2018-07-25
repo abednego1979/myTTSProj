@@ -12,6 +12,7 @@
 
 
 import pyttsx3
+from pydub import AudioSegment
 
 import os
 import sys
@@ -109,17 +110,26 @@ class myTtsEngine_win_kedaxunfei_tts(BaseTtsEngine):        #windows 科大讯�
         self.MSP_TTS_FLAG_DATA_END = 2
         self.MSP_TTS_FLAG_CMD_CANCELED = 4
         
-        self.filename = "tts_sample.wav"
+        self.filename = "_tts_sample.wav"
+        self.fileprefix = ""
         
         self.dbgFlag=debugFlag
         
-        self.login()
+        self.logState=False
         
         return
     
     def login(self):
         ret = self.dll.MSPLogin(None, None, self.login_params)
         print(('MSPLogin =>'), ret)
+        if ret==self.MSP_SUCCESS:
+            self.logState=True
+    
+    def logout(self):
+        ret = self.dll.MSPLogout()
+        print(('MSPLogout =>'), ret)
+        if ret==self.MSP_SUCCESS:
+            self.logState=False
     
     def setVoices(self, voice_name):
         #打印所有可能的voice
@@ -127,6 +137,7 @@ class myTtsEngine_win_kedaxunfei_tts(BaseTtsEngine):        #windows 科大讯�
         for i in range(len(self.session_begin_params)):
             if self.session_begin_params[i].startswith("voice_name"):
                 self.session_begin_params[i]="voice_name = %s" % voice_name
+        self.fileprefix=voice_name
         return
     
     def setSpeechRate(self, setValue):
@@ -149,30 +160,54 @@ class myTtsEngine_win_kedaxunfei_tts(BaseTtsEngine):        #windows 科大讯�
     
     def say(self, text):
         if self.dbgFlag:
-            print ("Reading:", text)        
-        self.tts(text.encode('U8'), self.filename, ", ".join(self.session_begin_params).encode('utf-8'))
+            print ("Reading:", text)
+            
+        if not self.logState:
+            self.login()
+        else:
+            self.logout()
+            self.login()
+            
+        self.tts(text.encode('U8'), self.fileprefix+self.filename, ", ".join(self.session_begin_params).encode('utf-8'))
+        
+        if self.logState:
+            self.logout()
         return
     
     def tts(self, text, filename, session_begin_params):
         ret, audio_len, synth_status, getret, wav_datasize = c_int(), c_int(), c_int(), c_int(), c_int()
         sessionID = self.dll.QTTSSessionBegin(session_begin_params, byref(ret))
+        if self.dbgFlag:
+            print ('QTTSSessionBegin => sessionID:', sessionID, 'ret:', ret.value)
         ret = self.dll.QTTSTextPut(sessionID, text, len(text), None)
+        if self.dbgFlag:
+            print ('QTTSTextPut => ret:', ret)
+            #11212:试用资源过期
     
         wavFile = open(filename, 'wb')
         wavFile.write(self.wav_header)
+        
+        if self.dbgFlag:
+            print ('QTTSAudioGet => ',)
         while True:
+            self.dll.QTTSAudioGet.restype = POINTER(c_ushort * (1024 * 1024))
             data = self.dll.QTTSAudioGet(sessionID, byref(audio_len), byref(synth_status), byref(getret))
+            if self.dbgFlag:
+                print ('QTTSAudioGet => audio_len:', audio_len.value, 'synth_status:', synth_status.value, 'getret:', getret.value)
+                
             if audio_len.value>0:
-                #print('datasize:%d\r' % wav_datasize.value, end='\r')
+                print('datasize:%d\r' % wav_datasize.value, end='\r')
                 pass
             if getret.value != self.MSP_SUCCESS:
+                if self.dbgFlag:
+                    print ('!MSP_SUCCESS => getret:', getret.value)     #10132:MSP_ERROR_INVALID_OPERATION
                 break
             if data:
                 wavFile.write(string_at(data, audio_len))
                 wav_datasize.value += audio_len.value
             if synth_status.value == self.MSP_TTS_FLAG_DATA_END:
                 break
-            #time.sleep(0.01)
+            time.sleep(0.01)
         # fix wav header
         WAVE_HEADER_SIZE = 44
         if wav_datasize.value>0:
@@ -183,7 +218,12 @@ class myTtsEngine_win_kedaxunfei_tts(BaseTtsEngine):        #windows 科大讯�
             wavFile.seek(40)
             wavFile.write(wav_datasize)
         wavFile.close()
-        self.dll.QTTSSessionEnd(sessionID, "Normal")
+        ret = self.dll.QTTSSessionEnd(sessionID, "Normal")
+        if self.dbgFlag:
+            print ('QTTSSessionEnd => ret:', ret)
+        
+        #trans wav to mp3
+        myAudioEngine_wav2mp3().trans(filename, filename.replace(".wav", ".mp3"))
         
         #play the wav file
         chunk = 1024
@@ -197,33 +237,19 @@ class myTtsEngine_win_kedaxunfei_tts(BaseTtsEngine):        #windows 科大讯�
             data = f.readframes(chunk)
         stream.stop_stream()  
         stream.close()
-        p.terminate() 
+        p.terminate()
+        f.close()
         #delete the wav file
         try:
             os.remove(filename)
         except:
             pass
         
+class myAudioEngine_wav2mp3():  #wav转mp3的引擎
+    def __init__(self, debugFlag=False):
+        return
     
-#example
-
-Text="Sally sells seashells by the seashore. 1, 2, 3. One, Two, Three. The quick brown fox jumped over the lazy dog. 我是中国人，商贾云集，贾宝玉. 1, 2, 3, 4, 5."
-
-eng=myTtsEngine_win_os_tts(debugFlag=True)
-eng.setVoices("zira")
-eng.setSpeechRate(60)
-eng.setVolume(1.0)
-eng.say(Text)
-
-eng.setVoices("huihui")
-eng.setSpeechRate(60)
-eng.setVolume(1.0)
-eng.say(Text)
-
-
-eng=myTtsEngine_win_kedaxunfei_tts(debugFlag=True)
-eng.setVoices("xiaoyan")
-eng.setSpeechRate(40)
-eng.setVolume(1.0)
-eng.say(Text)
-
+    def trans(self, inFile, outFile):
+        #voice=AudioSegment.from_wav(inFile)
+        #voice.export(outFile, format="mp3")
+        return
